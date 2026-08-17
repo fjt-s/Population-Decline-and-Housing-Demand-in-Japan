@@ -1,0 +1,19 @@
+# secrets
+.env
+
+# data (large / re-downloadable — regenerate via scripts/)
+data/raw/*
+data/processed/*
+data/external/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os
+.DS_Store
