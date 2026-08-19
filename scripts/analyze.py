@@ -5,6 +5,7 @@
 案1-c: 案1-bの r（棟数） と rho（Spearman）の食い違いが外れ値のせいかを、ウィンザライズして確認
 案1-d: 「相関が密度区分で強弱するのは地価水準の違いで説明できるか」を交互作用項付き回帰で検証
 案1-e: 案1-bと直接比較するため、密度の代わりに地価四分位で区分した場合の相関
+案1-f0: 前提確認（地方ほど持ち家率が高いか）: log(人口密度) × 持ち家率 の相関・密度区分別の持ち家率
 案1-f: 案1-dと同じ枠組みで、持ち家率（地方の「戸建て信仰」）が相関の強弱を説明できるかを検証
 案1-g: 案1-bと直接比較するため、密度の代わりに持ち家率四分位で区分した場合の相関
 案2: 世帯分裂パラドックス（人口は減っているが世帯数は増えている自治体）と住宅着工の関係
@@ -301,6 +302,24 @@ def analysis1e_land_price_segmented(clean: pd.DataFrame, base: pd.DataFrame) -> 
     return summary
 
 
+def analysis1f0_density_vs_owned_ratio(clean: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+    """案1-fの前提（「地方ほど持ち家率が高い」）を裏付けるため、
+    人口密度区分別の持ち家率と、log(密度) × 持ち家率 の相関を確認する。
+    """
+    df = clean.merge(base[["area_code", "owned_ratio"]], on="area_code", how="left")
+    df = df.dropna(subset=["owned_ratio"])
+    df["log_density"] = np.log10(df["density_2020"])
+
+    r, p = stats.pearsonr(df["log_density"], df["owned_ratio"])
+    print(f"[案1-f0] log(人口密度) と 持ち家率 の相関: r={r:.3f} (p={p:.2e}, n={len(df)})")
+
+    summary = df.groupby("size_group")["owned_ratio"].agg(["mean", "median", "count"]).sort_index()
+    print("[案1-f0] 密度区分別の持ち家率（地方ほど持ち家率が高い、という前提の確認）:")
+    print(summary.to_string())
+    summary.to_csv(PROCESSED_DIR / "analysis1f0_density_owned_ratio.csv")
+    return df
+
+
 # ---------- 案1-f: 相関の強弱は持ち家率で説明できるか（交互作用モデル） ----------
 
 def analysis1f_tenure_moderation(clean: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
@@ -308,7 +327,12 @@ def analysis1f_tenure_moderation(clean: pd.DataFrame, base: pd.DataFrame) -> pd.
     （持ち家取得はライフイベント的な動機で、賃貸市場のような需給調整が働きにくい）という仮説を、
     案1-dと同じ交互作用回帰の枠組みで検証する。2023年住宅・土地統計調査の持ち家率
     （2区分: 持ち家/借家）を使用。地価（案1-d）との比較のため同じモデル構造にする。
+
+    前段として案1-f0で「地方ほど持ち家率が高い」（log密度と持ち家率の相関 r=-0.64）こと自体を
+    確認しており、本関数はその上で「持ち家率が人口変化→着工率の効果を弱めるか」を検証する。
     """
+    analysis1f0_density_vs_owned_ratio(clean, base)
+
     df = clean.merge(base[["area_code", "owned_ratio"]], on="area_code", how="left")
     df = df.dropna(subset=["owned_ratio"])
     df["log_density"] = np.log10(df["density_2020"])
