@@ -542,6 +542,12 @@ def analysis1i_integrated_model(clean: pd.DataFrame, base: pd.DataFrame) -> pd.D
     print(f"[案1-i] 通勤時間×人口変化: 生DV p={commute_p_raw:.3f} / 対数DV p={commute_p_log:.3f}"
           f"（{'両方とも頑健' if max(commute_p_raw, commute_p_log) < 0.05 else '対数変換すると結果が変わる'}）")
 
+    robustness = pd.DataFrame([
+        {"moderator": "持ち家率 × 人口変化", "p_raw_dv": tenure_p_raw, "p_log_dv": tenure_p_log},
+        {"moderator": "通勤時間 × 人口変化", "p_raw_dv": commute_p_raw, "p_log_dv": commute_p_log},
+    ])
+    robustness.to_csv(PROCESSED_DIR / "analysis1i_moderator_robustness.csv", index=False)
+
     with open(PROCESSED_DIR / "analysis1i_final_model.txt", "w") as f:
         f.write("=== ネストモデル比較 ===\n")
         f.write(compare.to_string(index=False))
