@@ -1,4 +1,4 @@
-"""国勢調査（人口・世帯数）・住宅着工件数・公示地価・持ち家/借家比率を市区町村コード単位で統合する。
+"""国勢調査（人口・世帯数）・住宅着工件数・公示地価・持ち家/借家比率・通勤時間を市区町村コード単位で統合する。
 
 各データソースの市区町村コード体系は、テーブルごとに @level の振り方が異なる（政令指定都市の
 「市全体」行を level3 で表す年もあれば level4 で表す年もある）。そのため level 番号ではなく、
@@ -13,10 +13,12 @@
                                  （2022〜2026）
     housing_tenure.csv            市区町村コード：持ち家/借家（内訳: 公営/UR・公社/民営/給与）
                                  の住宅数・持ち家率（2023年単年の横断データ、年次を持たない）
+    commute.csv                   市区町村コード：通勤時間中位数（分、都市圏アクセスの代理指標。
+                                 2023年単年の横断データ、年次を持たない）
     merged_panel.csv             population_households/housing_starts/land_price の3つを
                                  year, area_code で外部結合したロング形式パネル
-                                 （housing_tenure は年次を持たないためこのパネルには含めず、
-                                 分析側で area_code のみで別途結合する）
+                                 （housing_tenure・commute は年次を持たないためこのパネルには
+                                 含めず、分析側で area_code のみで別途結合する）
 
 使い方:
     python scripts/build_dataset.py
@@ -244,6 +246,30 @@ def load_housing_tenure() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ---------- 5. 通勤時間中位数（都市圏へのアクセスの代理指標、2023年、単年横断データ） ----------
+
+def load_commute() -> pd.DataFrame:
+    """家計を主に支える者の通勤時間の中位数（分）を市区町村単位で整形する。
+
+    持ち家/借家比率と同じ2023年住宅・土地統計調査由来で、単年の横断データ。値が小さいほど
+    都市圏（雇用の中心）へのアクセスが良いと解釈する。cat01=0(男女総数), cat02=0(所有関係総数)
+    のみ取得済み。
+    """
+    stat = _load_json(RAW_DIR / "commute_median_0004021694.json")["GET_STATS_DATA"]["STATISTICAL_DATA"]
+    leaf = _leaf_area_codes(stat["CLASS_INF"]["CLASS_OBJ"])
+
+    rows = []
+    for v in stat["DATA_INF"]["VALUE"]:
+        code = v["@area"]
+        if code not in leaf:
+            continue
+        num = _to_num(v["$"])
+        if num is None:
+            continue
+        rows.append({"area_code": code, "area_name": leaf[code], "commute_time_median_min": num})
+    return pd.DataFrame(rows)
+
+
 # ---------- 統合 ----------
 
 def build_panel() -> pd.DataFrame:
@@ -253,11 +279,13 @@ def build_panel() -> pd.DataFrame:
     housing = load_housing_starts()
     land = load_land_price()
     tenure = load_housing_tenure()
+    commute = load_commute()
 
     census.sort_values(["area_code", "year"]).to_csv(PROCESSED_DIR / "population_households.csv", index=False)
     housing.sort_values(["area_code", "year"]).to_csv(PROCESSED_DIR / "housing_starts.csv", index=False)
     land.sort_values(["area_code", "year"]).to_csv(PROCESSED_DIR / "land_price.csv", index=False)
     tenure.sort_values("area_code").to_csv(PROCESSED_DIR / "housing_tenure.csv", index=False)
+    commute.sort_values("area_code").to_csv(PROCESSED_DIR / "commute.csv", index=False)
 
     panel = pd.merge(
         census[["year", "area_code", "area_name", "population", "households", "area_km2"]],

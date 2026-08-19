@@ -8,6 +8,10 @@
 案1-f0: 前提確認（地方ほど持ち家率が高いか）: log(人口密度) × 持ち家率 の相関・密度区分別の持ち家率
 案1-f: 案1-dと同じ枠組みで、持ち家率（地方の「戸建て信仰」）が相関の強弱を説明できるかを検証
 案1-g: 案1-bと直接比較するため、密度の代わりに持ち家率四分位で区分した場合の相関
+案1-h: 通勤時間中位数（都市圏アクセスの代理指標）が相関の強弱を説明できるかを検証
+案1-i: 密度・持ち家率・通勤時間・地価を1つにまとめた統合モデル（ネスト比較・頑健標準誤差・
+       対数変換DVでの頑健性確認）。README記載の3仮説（世帯数増加/地価/都市圏アクセス）を
+       まとめて評価する、Statistical Modeling段階の本体
 案2: 世帯分裂パラドックス（人口は減っているが世帯数は増えている自治体）と住宅着工の関係
 案3: 地価水準 × 住宅着工率 × 人口減少率 による自治体クラスタリング（KMeans）
 
@@ -18,10 +22,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from scipy import stats
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 PROCESSED_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
 
@@ -65,9 +71,13 @@ def build_base_table(panel: pd.DataFrame) -> pd.DataFrame:
     owned_ratio = tenure["owned_ratio"].rename("owned_ratio")
     rented_private_ratio = tenure["rented_private_ratio"].rename("rented_private_ratio")
 
+    # 通勤時間中位数（都市圏アクセスの代理指標。同じく2023年単年の横断データ）
+    commute = pd.read_csv(PROCESSED_DIR / "commute.csv").set_index("area_code")
+    commute_time = commute["commute_time_median_min"].rename("commute_time_median_min")
+
     base = pd.concat(
         [pop, hh, area_km2, housing_total, housing_floor_total, housing_years, land, land_n,
-         owned_ratio, rented_private_ratio],
+         owned_ratio, rented_private_ratio, commute_time],
         axis=1,
     )
     base["area_name"] = names
@@ -393,6 +403,162 @@ def analysis1g_tenure_segmented(clean: pd.DataFrame, base: pd.DataFrame) -> pd.D
     return summary
 
 
+# ---------- 案1-h: 相関の強弱は通勤時間（都市圏アクセス）で説明できるか ----------
+
+def analysis1h_commute_moderation(clean: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+    """READMEの3仮説のうち唯一未検証だった「都市圏へのアクセス」を、通勤時間中位数
+    （2023年住宅・土地統計調査、値が大きいほど通勤に時間がかかる＝大都市圏の郊外・ベッドタウンで
+    高くなる傾向がある指標）を使って案1-d/1-fと同じ枠組みで検証する。
+
+    前提確認: 通勤時間は「都心から遠いほど短い」のではなく、農山村（職住近接で通勤自体が短い）で
+    最短、大都市圏のベッドタウン的な高密度都市部で最長になる（密度と同方向の「都市圏度」指標）。
+    """
+    df = clean.merge(base[["area_code", "commute_time_median_min"]], on="area_code", how="left")
+    df = df.dropna(subset=["commute_time_median_min"])
+    df["log_density"] = np.log10(df["density_2020"])
+
+    commute_by_group = df.groupby("size_group")["commute_time_median_min"].agg(["mean", "median", "count"]).sort_index()
+    print("[案1-h] 密度区分別の通勤時間中位数（前提確認: 都市部ほど長い＝郊外・ベッドタウン的傾向）:")
+    print(commute_by_group.to_string())
+    commute_by_group.to_csv(PROCESSED_DIR / "analysis1h0_density_commute.csv")
+
+    print(f"\n[案1-h] n={len(df)}（通勤時間データありの自治体のみ）")
+    m_full = smf.ols(
+        "housing_floor_rate ~ pop_change_00_20 * commute_time_median_min + log_density",
+        data=df,
+    ).fit()
+    print("\n[案1-h] 通勤時間 × 人口変化の交互作用モデル（log_density統制）")
+    print(m_full.summary())
+
+    interaction_coef = m_full.params["pop_change_00_20:commute_time_median_min"]
+    interaction_p = m_full.pvalues["pop_change_00_20:commute_time_median_min"]
+    print(f"\n[案1-h] 交互作用項 pop_change_00_20:commute_time_median_min = {interaction_coef:.4f} "
+          f"(p={interaction_p:.2e})")
+    if interaction_p < 0.05:
+        print("[案1-h] → 統計的に有意（log_density統制後も残る）。ただし案1-iで対数変換したDVでも"
+              "頑健かどうかを確認する必要がある。")
+    else:
+        print("[案1-h] → log_density統制後は交互作用が有意でない")
+
+    with open(PROCESSED_DIR / "analysis1h_commute_moderation.txt", "w") as f:
+        f.write(m_full.summary().as_text())
+
+    return df
+
+
+# ---------- 案1-i: 統合モデル（密度・持ち家率・通勤時間・地価） ----------
+
+def analysis1i_integrated_model(clean: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+    """案1-d〜1-hで個別に検証してきた地価・持ち家率・通勤時間を1つのモデルにまとめ、
+    ネストしたモデル比較（F検定）でそれぞれの追加説明力を評価する。README記載の3仮説
+    （世帯数増加/地価/都市圏アクセス）のうち、地価と都市圏アクセスをこの1モデルで検証する
+    （世帯数増加＝世帯分裂パラドックスは案2で別途扱う）。
+
+    生の housing_floor_rate は歪度4.1・尖度80超と非常に歪んでおり、通常のOLSは残差の非正規性・
+    不等分散の影響を受けやすい。対数変換したDVでの再推定を頑健性確認として併記し、
+    交互作用項の生成による多重共線性を避けるため、連続変数は平均中心化してから交互作用項を作る
+    （中心化しても係数自体は変わらないが、他の項との相関＝条件数が大きく改善する）。
+    """
+    df = clean.merge(
+        base[["area_code", "owned_ratio", "land_price_avg_22_26", "commute_time_median_min"]],
+        on="area_code", how="left",
+    )
+    df["log_density"] = np.log10(df["density_2020"])
+    df["log_land_price"] = np.log10(df["land_price_avg_22_26"])
+    df["log_housing_floor_rate"] = np.log(df["housing_floor_rate"].clip(lower=0.01))
+
+    model_df = df.dropna(subset=["owned_ratio", "log_land_price", "commute_time_median_min"]).copy()
+    for col in ["pop_change_00_20", "owned_ratio", "log_density", "commute_time_median_min"]:
+        model_df[f"{col}_c"] = model_df[col] - model_df[col].mean()
+    print(f"[案1-i] n={len(model_df)}（地価・持ち家率・通勤時間すべて揃う自治体のみ）")
+
+    # 多重共線性チェック（地価と密度が強く相関することは案1-dで既に分かっている）
+    X = sm.add_constant(model_df[["pop_change_00_20", "log_density", "owned_ratio",
+                                   "log_land_price", "commute_time_median_min"]])
+    vif = pd.DataFrame({
+        "variable": X.columns,
+        "VIF": [variance_inflation_factor(X.values, i) for i in range(X.shape[1])],
+    })
+    print("\n[案1-i] VIF（分散拡大係数、目安10以上は多重共線性の懸念）:")
+    print(vif.to_string(index=False))
+    vif.to_csv(PROCESSED_DIR / "analysis1i_vif.csv", index=False)
+
+    # ネストモデル比較: 密度のみ(M0) → +持ち家率(M1) → +通勤時間(M2) → +地価(M3)
+    # 地価はM2までの変数と強く共線（VIF高）なので最後に足して、追加の説明力があるかだけ見る。
+    m0 = smf.ols("housing_floor_rate ~ pop_change_00_20_c + log_density_c", data=model_df).fit()
+    m1 = smf.ols(
+        "housing_floor_rate ~ pop_change_00_20_c * owned_ratio_c + log_density_c", data=model_df,
+    ).fit()
+    m2 = smf.ols(
+        "housing_floor_rate ~ pop_change_00_20_c * owned_ratio_c + log_density_c "
+        "+ pop_change_00_20_c * commute_time_median_min_c",
+        data=model_df,
+    ).fit()
+    m3 = smf.ols(
+        "housing_floor_rate ~ pop_change_00_20_c * owned_ratio_c + log_density_c "
+        "+ pop_change_00_20_c * commute_time_median_min_c + log_land_price",
+        data=model_df,
+    ).fit()
+
+    compare = pd.DataFrame([
+        {"model": "M0 密度のみ", "r2": m0.rsquared, "adj_r2": m0.rsquared_adj, "aic": m0.aic},
+        {"model": "M1 +持ち家率×人口変化", "r2": m1.rsquared, "adj_r2": m1.rsquared_adj, "aic": m1.aic},
+        {"model": "M2 +通勤時間×人口変化", "r2": m2.rsquared, "adj_r2": m2.rsquared_adj, "aic": m2.aic},
+        {"model": "M3 +地価（主効果のみ）", "r2": m3.rsquared, "adj_r2": m3.rsquared_adj, "aic": m3.aic},
+    ])
+    print("\n[案1-i] ネストモデル比較（各段階でR^2・AICがどれだけ改善するか）:")
+    print(compare.to_string(index=False))
+    compare.to_csv(PROCESSED_DIR / "analysis1i_model_comparison.csv", index=False)
+
+    f01 = sm.stats.anova_lm(m0, m1)
+    f12 = sm.stats.anova_lm(m1, m2)
+    f23 = sm.stats.anova_lm(m2, m3)
+    print(f"\n[案1-i] F検定: M0→M1（持ち家率追加） F={f01['F'][1]:.2f} p={f01['Pr(>F)'][1]:.2e}")
+    print(f"[案1-i] F検定: M1→M2（通勤時間追加） F={f12['F'][1]:.2f} p={f12['Pr(>F)'][1]:.2e}")
+    print(f"[案1-i] F検定: M2→M3（地価追加）    F={f23['F'][1]:.2f} p={f23['Pr(>F)'][1]:.2e}")
+
+    # M2（地価を除いた最終モデル）を頑健標準誤差(HC3)で報告。地価は上のF検定で追加の説明力を
+    # ほぼ持たないことを確認済みなので、最終モデルからは除いて簡潔にする。
+    m2_robust = m2.get_robustcov_results(cov_type="HC3")
+    print("\n[案1-i] 最終モデル（M2、HC3頑健標準誤差）:")
+    print(m2_robust.summary())
+
+    # 頑健性確認: 生のDVは歪度・尖度が大きいため、対数変換したDVでも同じ結論になるか確認する
+    m2_log = smf.ols(
+        "log_housing_floor_rate ~ pop_change_00_20_c * owned_ratio_c + log_density_c "
+        "+ pop_change_00_20_c * commute_time_median_min_c",
+        data=model_df,
+    ).fit()
+    m2_log_robust = m2_log.get_robustcov_results(cov_type="HC3")
+    print("\n[案1-i] 頑健性確認: 対数変換DV（log_housing_floor_rate）でのM2相当モデル（HC3）:")
+    print(m2_log_robust.summary())
+
+    tenure_p_raw = m2_robust.pvalues[m2.params.index.get_loc("pop_change_00_20_c:owned_ratio_c")]
+    commute_p_raw = m2_robust.pvalues[m2.params.index.get_loc("pop_change_00_20_c:commute_time_median_min_c")]
+    tenure_p_log = m2_log_robust.pvalues[m2_log.params.index.get_loc("pop_change_00_20_c:owned_ratio_c")]
+    commute_p_log = m2_log_robust.pvalues[m2_log.params.index.get_loc("pop_change_00_20_c:commute_time_median_min_c")]
+    print(f"\n[案1-i] 持ち家率×人口変化: 生DV p={tenure_p_raw:.3f} / 対数DV p={tenure_p_log:.3f}"
+          f"（{'両方とも頑健' if max(tenure_p_raw, tenure_p_log) < 0.05 else '対数変換すると結果が変わる'}）")
+    print(f"[案1-i] 通勤時間×人口変化: 生DV p={commute_p_raw:.3f} / 対数DV p={commute_p_log:.3f}"
+          f"（{'両方とも頑健' if max(commute_p_raw, commute_p_log) < 0.05 else '対数変換すると結果が変わる'}）")
+
+    with open(PROCESSED_DIR / "analysis1i_final_model.txt", "w") as f:
+        f.write("=== ネストモデル比較 ===\n")
+        f.write(compare.to_string(index=False))
+        f.write("\n\n=== M0->M1 F検定 ===\n")
+        f.write(f01.to_string())
+        f.write("\n\n=== M1->M2 F検定 ===\n")
+        f.write(f12.to_string())
+        f.write("\n\n=== M2->M3 F検定 ===\n")
+        f.write(f23.to_string())
+        f.write("\n\n=== 最終モデル M2（生DV、HC3） ===\n")
+        f.write(m2_robust.summary().as_text())
+        f.write("\n\n=== 頑健性確認: M2相当（対数DV、HC3） ===\n")
+        f.write(m2_log_robust.summary().as_text())
+
+    return model_df
+
+
 # ---------- 案2: 世帯分裂パラドックス ----------
 
 def analysis2_household_divergence(base: pd.DataFrame) -> pd.DataFrame:
@@ -494,6 +660,10 @@ if __name__ == "__main__":
     analysis1f_tenure_moderation(clean1b, base)
     print("=" * 60)
     analysis1g_tenure_segmented(clean1b, base)
+    print("=" * 60)
+    analysis1h_commute_moderation(clean1b, base)
+    print("=" * 60)
+    analysis1i_integrated_model(clean1b, base)
     print("=" * 60)
     analysis2_household_divergence(base)
     print("=" * 60)
