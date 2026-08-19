@@ -35,7 +35,7 @@ def get_stats_list(stats_code: str, **params) -> dict:
 
 
 def get_stats_data(stats_data_id: str, **params) -> dict:
-    """statsDataId で指定した統計表の実データを取得する。"""
+    """statsDataId で指定した統計表の実データを取得する（1リクエスト分、最大10万件）。"""
     r = requests.get(
         f"{BASE_URL}/getStatsData",
         params={"appId": _app_id(), "statsDataId": stats_data_id, **params},
@@ -43,6 +43,26 @@ def get_stats_data(stats_data_id: str, **params) -> dict:
     )
     r.raise_for_status()
     return r.json()
+
+
+def get_stats_data_all(stats_data_id: str, **params) -> dict:
+    """statsDataId の実データを、1リクエストの上限（10万件）を超える分も含めて全件取得する。
+
+    RESULT_INF.NEXT_KEY がある限り startPosition を進めながらページングし、
+    VALUE 配列を結合した1つのレスポンスとして返す（RESULT_INF は最後のページのものになる）。
+    """
+    data = get_stats_data(stats_data_id, **params)
+    stat_data = data["GET_STATS_DATA"]["STATISTICAL_DATA"]
+    values = stat_data["DATA_INF"]["VALUE"]
+    next_key = stat_data.get("RESULT_INF", {}).get("NEXT_KEY")
+    while next_key:
+        page = get_stats_data(stats_data_id, startPosition=next_key, **params)
+        page_stat_data = page["GET_STATS_DATA"]["STATISTICAL_DATA"]
+        values.extend(page_stat_data["DATA_INF"]["VALUE"])
+        next_key = page_stat_data.get("RESULT_INF", {}).get("NEXT_KEY")
+        stat_data["RESULT_INF"] = page_stat_data.get("RESULT_INF", {})
+    stat_data["DATA_INF"]["VALUE"] = values
+    return data
 
 
 if __name__ == "__main__":

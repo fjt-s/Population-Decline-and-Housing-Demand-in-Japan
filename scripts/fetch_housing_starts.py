@@ -22,7 +22,7 @@ import json
 import sys
 from pathlib import Path
 
-from estat_client import get_stats_data, get_stats_list
+from estat_client import get_stats_data_all, get_stats_list
 
 STATS_CODE = "00600120"  # 建築着工統計調査
 
@@ -57,7 +57,7 @@ def list_tables(year: int | None = None):
 
 def fetch(key: str):
     stats_data_id = HOUSING_STARTS_TABLES[key]
-    data = get_stats_data(stats_data_id)
+    data = get_stats_data_all(stats_data_id)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     out = RAW_DIR / f"housing_starts_{key}_{stats_data_id}.json"
     out.write_text(json.dumps(data, ensure_ascii=False, indent=2))

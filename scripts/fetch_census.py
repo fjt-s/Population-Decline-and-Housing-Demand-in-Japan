@@ -27,6 +27,10 @@ CENSUS_TABLES = {
     2020: "0003433220",
 }
 
+# 2020年は 0003433220 に現数値の総人口（tab）が含まれていない（2015年組替人口のみ）ため、
+# 男女別人口表 0003433219（tab=2020_01, cat01=0 が総数）から現数値人口を補う。
+CENSUS_2020_POPULATION_TABLE = "0003433219"
+
 RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 
@@ -56,9 +60,19 @@ def fetch(year: int):
     print(f"saved: {out}")
 
 
+def fetch_2020_population():
+    stats_data_id = CENSUS_2020_POPULATION_TABLE
+    data = get_stats_data(stats_data_id)
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    out = RAW_DIR / f"census_2020_pop_{stats_data_id}.json"
+    out.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    print(f"saved: {out}")
+
+
 def fetch_all():
     for year in CENSUS_TABLES:
         fetch(year)
+    fetch_2020_population()
 
 
 if __name__ == "__main__":
